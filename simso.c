@@ -1,6 +1,6 @@
 /*
  * OPERATING SYSTEM SIMULATION  (ncurses port)
- * Original DOS/Turbo-C + BGI version by Eduard G.Castello and Llorenc Llado.
+ * Original DOS/Turbo-C + BGI version by Eduard G.Castello and Llorenç Llado.
  *
  * The scheduling logic (round-robin CPU, Banker's-style deadlock
  * avoidance, memory allocation, I/O queue) is preserved verbatim.
@@ -273,7 +273,7 @@ static void render_frame(int pause)
     mvprintw(0, 2, "OPERATING SYSTEM SIMULATION");
     attroff(attr_of(9) | A_BOLD);
     attron(attr_of(9));
-    mvprintw(1, 2, "Eduard G.Castello & Llorenc Llado");
+    mvprintw(1, 2, "Eduard G.Castello & Llorenç Llado");
     attroff(attr_of(9));
 
     /* ---- memory bar (64 units) ---- */
