@@ -1,6 +1,6 @@
 /*
  * OPERATING SYSTEM SIMULATION  (ncurses port)
- * Original DOS/Turbo-C + BGI version by Eduard G.Castello
+ * Original DOS/Turbo-C + BGI version by Eduard G.Castello and Llorenc Llado.
  *
  * The scheduling logic (round-robin CPU, Banker's-style deadlock
  * avoidance, memory allocation, I/O queue) is preserved verbatim.
@@ -9,9 +9,8 @@
  *   - mouse-driven dialog    -> keyboard prompts
  *   - conio/dos (clrscr, gotoxy, delay, randomize) -> ncurses/std equivalents
  *
- * Build:       gcc -O2 -Wall simso.c -o simso -lncurses
- * Build fil-c: filcc -O2 -s simso.c -o simso -lncurses
- * Run  :       ./simso      (needs a terminal of at least 80x24)
+ * Build:  gcc -O2 -Wall simso.c -o simso -lncurses
+ * Run  :  ./simso      (needs a terminal of at least 80x24)
  */
 
 #include <ncurses.h>
@@ -108,6 +107,11 @@ static const short bgi_ncurses[8] = {
     COLOR_RED,   COLOR_MAGENTA, COLOR_YELLOW, COLOR_WHITE
 };
 
+/*
+ * attr_of - translate a 16-colour BGI index into an ncurses attribute.
+ *   Low 3 bits pick the colour pair (1..8); bit 3 (the old "bright" flag)
+ *   adds A_BOLD. Every coloured draw in render_frame() goes through this.
+ */
 static int attr_of(int bgi)
 {
     int a = COLOR_PAIR((bgi & 7) + 1);
@@ -115,7 +119,11 @@ static int attr_of(int bgi)
     return a;
 }
 
-/* original A..L colour mapping from the BGI memory bar */
+/*
+ * color_of_letter - map a process letter 'A'..'L' to its stable
+ *   colour-pair index (1..12), so each process keeps one colour in the
+ *   memory bar. Unknown letters fall back to white.
+ */
 static int color_of_letter(char c)
 {
     switch (c) {
@@ -127,6 +135,12 @@ static int color_of_letter(char c)
     }
 }
 
+/*
+ * init_ui - bring up the ncurses screen: cbreak + noecho input, hidden
+ *   cursor, keypad, and the 8 colour pairs built from bgi_ncurses[]. Aborts
+ *   with a stderr message if the terminal is smaller than 80x24. Replaces
+ *   the BGI graphics-mode init.
+ */
 static void init_ui(void)
 {
     initscr();
@@ -151,13 +165,22 @@ static void init_ui(void)
     }
 }
 
+/*
+ * cleanup_exit - endwin() then exit(code). Used at every exit point so the
+ *   terminal is always restored first (the original called raw exit() from
+ *   graphics mode).
+ */
 static void cleanup_exit(int code)
 {
     endwin();
     exit(code);
 }
 
-/* box with a title, ACS line-drawing characters */
+/*
+ * draw_box - draw a titled rectangle in ACS line-drawing characters at
+ *   (y,x) with height h and width w. Replaces the BGI cuadro()/panel()
+ *   frames.
+ */
 static void draw_box(int y, int x, int h, int w, const char *title)
 {
     mvhline(y, x + 1, ACS_HLINE, w - 2);
@@ -175,7 +198,11 @@ static void draw_box(int y, int x, int h, int w, const char *title)
     }
 }
 
-/* keyboard replacement for the old scanf-in-graphics-mode inputs */
+/*
+ * prompt_int - modal keyboard prompt that reads an integer in [lo,hi],
+ *   re-asking on invalid input. Temporarily re-enables echo and the cursor.
+ *   Replaces the old mouse + checkbox data-entry dialog.
+ */
 static int prompt_int(const char *label, int lo, int hi)
 {
     int v;
@@ -211,6 +238,11 @@ static int prompt_int(const char *label, int lo, int hi)
     return v;
 }
 
+/*
+ * show_message_wait - print a bold status line (row 23, clipped to 78 cols)
+ *   and block until a key is pressed. Drives the two error screens and the
+ *   end-of-run message.
+ */
 static void show_message_wait(const char *m)
 {
     nodelay(stdscr, FALSE);
@@ -222,9 +254,13 @@ static void show_message_wait(const char *m)
     getch();
 }
 
-/* Full-screen redraw from global state. When pause!=0 the frame
- * lingers (mirrors the old delay(500) inside imprimir_colas) and a
- * 'q' keypress aborts cleanly. */
+/*
+ * render_frame - the heart of the presentation layer: redraw the whole
+ *   dashboard from global state - memory bar, the four queue boxes, the
+ *   A/B/C resource counters, and the running-process PCB panel. When pause!=0
+ *   the frame lingers ~STEP_DELAY_MS and 'q' aborts cleanly (mirrors the
+ *   old delay(500) inside imprimir_colas). Replaces every BGI draw call.
+ */
 static void render_frame(int pause)
 {
     int i;
@@ -237,7 +273,7 @@ static void render_frame(int pause)
     mvprintw(0, 2, "OPERATING SYSTEM SIMULATION");
     attroff(attr_of(9) | A_BOLD);
     attron(attr_of(9));
-    mvprintw(1, 2, "Eduard G.Castello");
+    mvprintw(1, 2, "Eduard G.Castello & Llorenc Llado");
     attroff(attr_of(9));
 
     /* ---- memory bar (64 units) ---- */
@@ -380,6 +416,11 @@ static void render_frame(int pause)
 /* rand()%rand() from the original, guarded against divide-by-zero
  * (Borland's RNG never crashed here by luck; glibc will raise SIGFPE
  *  the moment the divisor rand() returns 0). Same distribution. */
+/*
+ * safe_rr - the original's "rand() % rand()" distribution, but returns 0
+ *   instead of dividing by a zero divisor (which would SIGFPE on Linux).
+ *   Used wherever the sim picks letters, memory sizes and burst times.
+ */
 static int safe_rr(void)
 {
     int d = rand();
@@ -389,6 +430,15 @@ static int safe_rr(void)
 /* ================================================================== */
 /*  MAIN                                                              */
 /* ================================================================== */
+/*
+ * main - program entry point and top-level scheduler loop. Seeds the RNG,
+ *   builds the UI, prompts for quantum and I/O time, then the finish mode
+ *   (1 = stop after N processes, 2 = run until all finish). Sets up the five
+ *   initial processes, then loops: dispatch ready processes through
+ *   solicitud/evitacion/round_robin/recursos while any exist, else service
+ *   I/O via resta_es(). Ends when comprobar_final() reaches 0, or breaks
+ *   early if error_sistema() reports an unresolvable resource deadlock.
+ */
 int main(void)
 {
     int error, z, fi = 1, entrades = 5, cert = 1;
@@ -486,6 +536,11 @@ int main(void)
 /*  SIMULATION CORE  (logic identical to the original)               */
 /* ================================================================== */
 
+/*
+ * nombre_procesos - initialise all 12 PCBs with letters A..L, state 1
+ *   (declared, not yet loaded), tag nombre[1]='X', and prime each I/O
+ *   wait counter with the user's I/O time.
+ */
 void nombre_procesos(void)
 {
     int i;
@@ -510,6 +565,10 @@ void nombre_procesos(void)
     }
 }
 
+/*
+ * escojer_cinco - randomly pick the five distinct process letters for the
+ *   initial ready queue (cola_preparados), re-rolling until no duplicates.
+ */
 void escojer_cinco(void)
 {
     int i = 0, valor = 0, j = 0, aux;
@@ -531,6 +590,12 @@ void escojer_cinco(void)
     } while (aux != 0);
 }
 
+/*
+ * compactar - keep the waiting queue (cola_espera) dense.
+ *   n>1: remove the n admitted processes from the waiting queue and squeeze
+ *   out the gaps. n==1: shift the queue down by one (used when a single new
+ *   process is admitted later). The param shadows the global name; harmless.
+ */
 void compactar(int compactar)
 {
     int i, j;
@@ -568,11 +633,26 @@ void compactar(int compactar)
     }
 }
 
+/*
+ * imprimir_colas - render one animated dashboard frame (with the linger +
+ *   'q'-to-abort behaviour). Kept as its own name because the core
+ *   calls it in dozens of places after every state change.
+ */
 void imprimir_colas(void)
 {
     render_frame(1);
 }
 
+/*
+ * creacion_pcb - turn ready-queue letters into fully populated processes.
+ *   Allocates memory (bailing the process back to the waiting queue if there
+ *   isn't enough), then randomises priority, resource maxima, execution
+ *   time and sorted I/O burst times, renames nombre[0] to 'P', and sets
+ *   state 2 (ready). Handles both the initial batch (procesos>1, driven by
+ *   cola_preparados) and later single admissions (procesos==1, via apunta).
+ *   Hardened vs the original: free-cell counters reset each pass and the
+ *   burst array is fully initialised - no read past memoria[63]/tiempoes[4].
+ */
 void creacion_pcb(int procesos, char apunta)
 {
     int j, i, k = 0, p = 0, valor, memo = 0;
@@ -692,12 +772,21 @@ void creacion_pcb(int procesos, char apunta)
     }
 }
 
+/*
+ * imprimir_cpu - mark PCB[proces] as the process in the CPU and redraw one
+ *   frame (no linger) so the PCB panel shows its live fields.
+ */
 void imprimir_cpu(int proces)
 {
     cpu_proc = proces;
     render_frame(0);
 }
 
+/*
+ * qua / es / procesos - legacy prompt wrappers (quantum / I/O time / process
+ *   count). The main dialog now inlines prompt_int(); these remain only for
+ *   source compatibility with the original.
+ */
 int qua(void)
 {
     return prompt_int("Enter the QUANTUM:", 1, 50);
@@ -713,6 +802,13 @@ int procesos(void)
     return prompt_int("Number of processes to finish:", 1, 12);
 }
 
+/*
+ * solicitud - request step for the process at the head of the ready queue
+ *   (cola_preparados[4]). Randomly releases some held resources back to the
+ *   A/B/C pool, then rolls a fresh request (solicitados[]) bounded by each
+ *   maximum. Returns the PCB index, or 12 if the head can't be found.
+ *   Search is bounded so it never dereferences PCB[12].
+ */
 int solicitud(void)
 {
     int j = 0, selec = 0, x, y, w;
@@ -747,6 +843,13 @@ int solicitud(void)
     return selec;
 }
 
+/*
+ * evitacion - Banker's-style deadlock avoidance for PCB[selec]'s request.
+ *   If it fits within the available A/B/C, resources are deducted and
+ *   assigned and it returns 1 (granted). Otherwise it rolls the state back,
+ *   moves the process to the resource-wait queue (state 5), drops it from the
+ *   ready queue, and returns 0 (blocked).
+ */
 int evitacion(int selec)
 {
     int k = 0, j, disponible = 0, da = 0, db = 0, dc = 0, valor = 1;
@@ -788,6 +891,15 @@ int evitacion(int selec)
     return valor;
 }
 
+/*
+ * round_robin - run PCB[selec] for up to one quantum. Rotates it to the head
+ *   of the ready queue, then each cycle ticks down its execution time and
+ *   every I/O countdown. On exit it dispatches by outcome: move to the I/O
+ *   queue (a burst hit 0), retire it and free its resources and memory when
+ *   execution finishes (decrementing numero), or re-queue it if the quantum
+ *   expired mid-run. Every few rounds (the nou_proces throttle) it also
+ *   admits one process from the waiting queue.
+ */
 void round_robin(int selec)
 {
     int i, k = 0, aux = 0, c = 4, entra = 0;
@@ -883,6 +995,11 @@ void round_robin(int selec)
     imprimir_colas();
 }
 
+/*
+ * compactar_cola_preparados - shift the ready queue up by one and put a
+ *   'z' (empty marker) at the front, then redraw. Called after a process
+ *   leaves the head slot.
+ */
 void compactar_cola_preparados(void)
 {
     int i;
@@ -892,6 +1009,10 @@ void compactar_cola_preparados(void)
     imprimir_colas();
 }
 
+/*
+ * compactar_cola_es - drop the just-serviced entry from the I/O queue by
+ *   shifting the remaining entries down, then redraw.
+ */
 void compactar_cola_es(void)
 {
     int i = 0;
@@ -903,6 +1024,13 @@ void compactar_cola_es(void)
     imprimir_colas();
 }
 
+/*
+ * resta_es - advance every process in the I/O queue by one tick. When a
+ *   process finishes its I/O wait it is re-loaded into memory, its burst list
+ *   is shifted down, and it returns to the ready queue (state 2). main() runs
+ *   this branch whenever the ready queue is empty. Free-cell counting resets
+ *   each pass and is bounded to memoria[0..63].
+ */
 void resta_es(void)
 {
     int aux = 0, auxdos = 0, auxtres, i, memo = 0, k = 0;
@@ -946,6 +1074,10 @@ void resta_es(void)
     }
 }
 
+/*
+ * comprobar_final - count PCBs still alive (state != 0). Zero means every
+ *   process has finished; it is the outer loop's termination test.
+ */
 int comprobar_final(void)
 {
     int i, valor = 0;
@@ -954,6 +1086,10 @@ int comprobar_final(void)
     return valor;
 }
 
+/*
+ * comprobar_entrades - count PCBs in the ready state (2). Zero tells main()
+ *   to service I/O (resta_es) instead of dispatching a process.
+ */
 int comprobar_entrades(void)
 {
     int i, contador = 0;
@@ -962,6 +1098,13 @@ int comprobar_entrades(void)
     return contador;
 }
 
+/*
+ * recursos - retry granting resources to the process at the head of the
+ *   resource-wait queue (cola_recursos[0]), using the same Banker's check as
+ *   evitacion(). Returns the PCB index on success, or 12 when nothing can be
+ *   granted (which unwinds the dispatch loop in main). Bounded + guarded so
+ *   it never touches PCB[12].
+ */
 int recursos(void)
 {
     int j = 0, disponible = 0, selec = 0, valor, da, db, dc, k = 0;
@@ -1007,6 +1150,11 @@ int recursos(void)
     return valor;
 }
 
+/*
+ * compactar_recursos - shift the resource-wait queue up by one, mark the
+ *   tail empty ('z'), and redraw. Called once the head process is finally
+ *   granted its resources.
+ */
 void compactar_recursos(void)
 {
     int i;
@@ -1016,6 +1164,12 @@ void compactar_recursos(void)
     imprimir_colas();
 }
 
+/*
+ * error_sistema - deadlock detector. Returns 1 only when nothing can make
+ *   progress: no ready processes, no I/O pending, no waiting processes, yet
+ *   the resource-wait queue is non-empty. That triggers the Error N.2
+ *   (not enough resources) screen.
+ */
 int error_sistema(void)
 {
     int i, contador = 0, error;
