@@ -1,6 +1,6 @@
 /*
  * OPERATING SYSTEM SIMULATION  (ncurses port)
- * Original DOS/Turbo-C + BGI version by Eduard G.Castello and Llorenç Llado.
+ * Original DOS/Turbo-C + BGI version by Eduard Garcia and Lloren Llado.
  *
  * The scheduling logic (round-robin CPU, Banker's-style deadlock
  * avoidance, memory allocation, I/O queue) is preserved verbatim.
@@ -273,7 +273,7 @@ static void render_frame(int pause)
     mvprintw(0, 2, "OPERATING SYSTEM SIMULATION");
     attroff(attr_of(9) | A_BOLD);
     attron(attr_of(9));
-    mvprintw(1, 2, "Eduard G.Castello & Llorenç Llado");
+    mvprintw(1, 2, "Eduard Garcia and Lloren Llado");
     attroff(attr_of(9));
 
     /* ---- memory bar (64 units) ---- */
@@ -443,6 +443,11 @@ int main(void)
 {
     int error, z, fi = 1, entrades = 5, cert = 1;
     int syserror = 0;
+    int modo_todos = 0;   /* true = "run until all executed" (mode 2).
+                           * numero==0 means two different things depending
+                           * on mode (countdown-reached-zero vs. no-limit),
+                           * so the early-exit check below must not fire
+                           * for mode 2. */
     char point = 'y';
 
     srand((unsigned)time(NULL));
@@ -470,6 +475,7 @@ int main(void)
         }
         if (c == '2') {
             numero = 0;
+            modo_todos = 1;
             break;
         }
     }
@@ -503,7 +509,7 @@ int main(void)
             do {
                 if (z <= 11) {
                     round_robin(z);
-                    if (numero == 0) {
+                    if (!modo_todos && numero == 0) {
                         cleanup_exit(0);
                     }
                     z = recursos();
