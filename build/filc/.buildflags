@@ -1,0 +1,1 @@
+/opt/fil/bin/filcc|-std=gnu11  -Wall -Wextra -Wshadow -Wpointer-arith -Wno-unused-parameter -O2 -g -pthread |-pthread|-lncursesw
